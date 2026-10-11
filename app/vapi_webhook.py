@@ -17,12 +17,28 @@ logger = logging.getLogger(__name__)
 
 def _parse_datetime(date_str: str, time_str: str) -> dt.datetime:
     tz = ZoneInfo(settings.business_timezone)
-    return dt.datetime.fromisoformat(f"{date_str}T{time_str}").replace(tzinfo=tz)
+    parsed = dt.datetime.fromisoformat(f"{date_str}T{time_str}").replace(tzinfo=tz)
+
+    # The model computes "tomorrow"/"next Monday" etc. itself -- if the
+    # system prompt doesn't ground it with today's actual date, it can be
+    # wildly wrong (different year, etc.) while still parsing as a valid
+    # ISO datetime, so this would otherwise fail silently.
+    now = dt.datetime.now(tz)
+    if abs((parsed - now).days) > 365:
+        logger.warning(
+            "Parsed date %s is more than a year from now (today=%s) -- "
+            "the model likely miscalculated a relative date like 'tomorrow'. "
+            "Raw args: date=%r time=%r",
+            parsed.isoformat(), now.date().isoformat(), date_str, time_str,
+        )
+
+    return parsed
 
 
 async def _handle_check_availability(args: dict) -> str:
     start = _parse_datetime(args["date"], args["time"])
     end = start + dt.timedelta(minutes=settings.appointment_duration_minutes)
+    logger.info("check_availability: %s -> %s", start.isoformat(), end.isoformat())
 
     try:
         if calendar_service.check_availability(start, end):
@@ -48,6 +64,7 @@ async def _handle_book_appointment(args: dict) -> str:
     phone = args.get("phone", "")
     email = args.get("email")
     notes = args.get("notes", "")
+    logger.info("book_appointment: start=%s name=%r phone=%r", start.isoformat(), name, phone)
 
     try:
         if not calendar_service.check_availability(
